@@ -1,0 +1,28 @@
+{
+  "name": "megalodon",
+  "version": "1.0.0",
+  "description": "MegaEth NFTs verifier for discord roles",
+  "main": "verificationBot.js",
+  "scripts": {
+    "start": "node verificationBot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xalteeer/megalodon.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/0xalteeer/megalodon/issues"
+  },
+  "homepage": "https://github.com/0xalteeer/megalodon#readme",
+  "dependencies": {
+    "axios": "^1.16.0",
+    "better-sqlite3": "^12.9.0",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2"
+  }
+}
