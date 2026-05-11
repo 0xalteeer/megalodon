@@ -57,68 +57,76 @@ client.once(Events.ClientReady, async () => {
 });
 
 // Setup verification channels with pinned embeds and buttons
+
+// Setup verification channels with pinned embeds and buttons
 async function setupVerificationChannel() {
   try {
     for (const collection of collectionsConfig.collections) {
-      const channel = await client.channels.fetch(collection.channelId);
+      try {
+        const channel = await client.channels.fetch(collection.channelId);
 
-      if (!channel) {
-        console.error(`Verification channel not found for collection ${collection.id}`);
-        continue;
-      }
+        if (!channel) {
+          console.error(`Verification channel not found for collection ${collection.id}`);
+          continue;
+        }
 
-      const embed = new EmbedBuilder()
-        .setColor(0x5865f2)
-        .setTitle('🔐 NFT Ownership Verification')
-        .setDescription(
-          'Click the button below to verify your NFT ownership. You will:\n' +
-          '1. Provide your wallet address\n' +
-          '2. Add a unique token to your OpenSea bio\n' +
-          '3. Receive a role based on your NFT holdings\n\n' +
-          '**Manage your wallets:** Use the "Manage Wallets" button to check, add, or remove verified wallets.\n'
-        )
-        .setFooter({ text: 'This is a secure verification process' });
+        const embed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle('🔐 NFT Ownership Verification')
+          .setDescription(
+            'Click the button below to verify your NFT ownership. You will:\n' +
+            '1. Provide your wallet address\n' +
+            '2. Add a unique token to your OpenSea bio\n' +
+            '3. Receive a role based on your NFT holdings\n\n' +
+            '**Manage your wallets:** Use the "Manage Wallets" button to check, add, or remove verified wallets.\n'
+          )
+          .setFooter({ text: 'This is a secure verification process' });
 
-      const verifyButton = new ButtonBuilder()
-        .setCustomId(`start_verification_${collection.id}`)
-        .setStyle(ButtonStyle.Primary)
-        .setLabel('Start Verification');
+        const verifyButton = new ButtonBuilder()
+          .setCustomId(`start_verification_${collection.id}`)
+          .setStyle(ButtonStyle.Primary)
+          .setLabel('Start Verification');
 
-      const manageButton = new ButtonBuilder()
-        .setCustomId(`manage_wallets_${collection.id}`)
-        .setStyle(ButtonStyle.Secondary)
-        .setLabel('Manage Wallets');
+        const manageButton = new ButtonBuilder()
+          .setCustomId(`manage_wallets_${collection.id}`)
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Manage Wallets');
 
-      const row = new ActionRowBuilder().addComponents(verifyButton, manageButton);
+        const row = new ActionRowBuilder().addComponents(verifyButton, manageButton);
 
-      // Check if message already exists for this specific collection (fetch last 100 messages)
-      const messages = await channel.messages.fetch({ limit: 100 });
-      const existingMessage = messages.find(
-        msg => msg.author.id === client.user.id && msg.embeds.length > 0 && 
-               msg.components.length > 0 && 
-               msg.components[0].components[0].customId === `start_verification_${collection.id}`
-      );
+        // Check if message already exists for this specific collection
+        const messages = await channel.messages.fetch({ limit: 100 });
+        const existingMessage = messages.find(msg => {
+          if (msg.author.id !== client.user.id) return false;
+          if (msg.components.length === 0) return false;
+          const firstComponent = msg.components[0]?.components?.[0];
+          if (!firstComponent) return false;
+          return firstComponent.customId === `start_verification_${collection.id}`;
+        });
 
-      if (!existingMessage) {
-        const message = await channel.send({ embeds: [embed], components: [row] });
-        await message.pin();
-        console.log(`✅ Verification embed sent and pinned for collection: ${collection.id}`);
-      } else {
-        console.log(`✅ Verification embed already exists for collection: ${collection.id}`);
+        if (!existingMessage) {
+          const message = await channel.send({ embeds: [embed], components: [row] });
+          await message.pin();
+          console.log(`✅ Verification embed sent and pinned for collection: ${collection.id}`);
+        } else {
+          console.log(`✅ Verification embed already exists for collection: ${collection.id}`);
+        }
+      } catch (collectionError) {
+        console.error(`Error setting up collection ${collection.id}:`, collectionError.message);
+        if (collectionError.code === 'MissingPermissions' || collectionError.message.includes('Missing Permissions')) {
+          console.error('Missing Discord Permissions for this channel - Bot needs:');
+          console.error('   • View Channels');
+          console.error('   • Send Messages');
+          console.error('   • Read Message History');
+          console.error('   • Manage Roles (for role assignment)');
+        }
       }
     }
   } catch (error) {
-    if (error.code === 'MissingPermissions' || error.message.includes('Missing Permissions')) {
-      console.error('Missing Discord Permissions - Bot needs these permissions in the channel:');
-      console.error('   • View Channels');
-      console.error('   • Send Messages');
-      console.error('   • Read Message History');
-      console.error('   • Manage Roles (for role assignment)');
-    } else {
-      console.error('Error setting up verification channel:', error.message);
-    }
+    console.error('Outer error in setupVerificationChannel:', error.message);
   }
 }
+
 
 // Handle button interactions
 client.on(Events.InteractionCreate, async interaction => {
