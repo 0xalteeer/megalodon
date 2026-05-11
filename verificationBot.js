@@ -91,10 +91,12 @@ async function setupVerificationChannel() {
 
       const row = new ActionRowBuilder().addComponents(verifyButton, manageButton);
 
-      // Check if message already exists (fetch last 100 messages)
+      // Check if message already exists for this specific collection (fetch last 100 messages)
       const messages = await channel.messages.fetch({ limit: 100 });
       const existingMessage = messages.find(
-        msg => msg.author.id === client.user.id && msg.embeds.length > 0 && msg.embeds[0].title === '🔐 NFT Ownership Verification'
+        msg => msg.author.id === client.user.id && msg.embeds.length > 0 && 
+               msg.components.length > 0 && 
+               msg.components[0].components[0].customId === `start_verification_${collection.id}`
       );
 
       if (!existingMessage) {
@@ -184,15 +186,9 @@ async function showWalletManagementMenu(interaction, collectionId) {
   try {
     const userId = interaction.user.id;
     const wallets = database.getUserVerifiedWalletsForCollection(userId, collectionId);
-    const collection = collectionMap[collectionId];
-
-    if (!collection) {
-      return await interaction.editReply('Invalid collection configuration.');
-    }
 
     if (wallets.length === 0) {
       const msg = await interaction.editReply(
-        `**${collection.name}**\n\n` +
         `You haven't verified any wallets for this collection yet. Click "Start Verification" to add one.`
       );
       return;
@@ -224,7 +220,7 @@ async function showWalletManagementMenu(interaction, collectionId) {
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle(`💼 Wallet Management - ${collection.name}`)
+      .setTitle(`💼 Wallet Management`)
       .setDescription(`**Your Verified Wallets:**\n${walletList}\n\n**Actions:**`)
       .setFooter({ text: `col:${collectionId}` });
 
@@ -241,8 +237,6 @@ async function showDeleteConfirmation(interaction, collectionId, walletAddress) 
   await interaction.deferReply({ flags: 64 });
 
   try {
-    const collection = collectionMap[collectionId];
-    
     const confirmButton = new ButtonBuilder()
       .setCustomId(`confirm_delete_${collectionId}_${walletAddress}`)
       .setStyle(ButtonStyle.Danger)
@@ -259,7 +253,7 @@ async function showDeleteConfirmation(interaction, collectionId, walletAddress) 
       .setColor(0xff0000)
       .setTitle('⚠️ Confirm Deletion')
       .setDescription(
-        `Are you sure you want to delete wallet \`${walletAddress}\` from **${collection.name}**?\n\n` +
+        `Are you sure you want to delete wallet \`${walletAddress}\`?\n\n` +
         `If you no longer hold NFTs from this collection in any verified wallet, the role will be removed.`
       );
 
@@ -302,7 +296,7 @@ async function confirmWalletDeletion(interaction, collectionId, walletAddress) {
     }
 
     const msg = await interaction.editReply(
-      `✅ Wallet \`${walletAddress}\` has been deleted from **${collection.name}**.\n` +
+      `✅ Wallet \`${walletAddress}\` has been deleted.\n` +
       (hasAnyNFTs ? '✅ You still have NFTs from other wallets, so your role remains.' : '⚠️ Role has been removed as you no longer hold any NFTs from this collection.')
     );
     scheduleMessageDeletion(interaction, msg);
