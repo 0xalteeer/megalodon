@@ -11,7 +11,9 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ChannelType
+  ChannelType,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder
 } = require('discord.js');
 
 const axios = require('axios');
@@ -24,7 +26,7 @@ const database = require('./database');
 database.initializeDatabase();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages]
 });
 
 // Load collections configuration
@@ -36,7 +38,8 @@ const CONFIG = {
   OPENSEA_API_KEY: process.env.opensea_api_key,
   VERIFICATION_TIMEOUT: 5 * 60 * 1000, // 5 minutes
   POLL_INTERVAL: 10 * 1000, // 10 seconds
-  MESSAGE_DELETE_DELAY: 4 * 1000 // 4 seconds
+  MESSAGE_DELETE_DELAY: 4 * 1000, // 4 seconds
+  HOLDING_CHECK_INTERVAL: 15 * 60 * 1000 // 15 minutes
 };
 
 // Map collection IDs to their config for quick lookup
@@ -49,6 +52,8 @@ collectionsConfig.collections.forEach(collection => {
 client.once(Events.ClientReady, async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
   await setupVerificationChannel();
+  // Start periodic holding checks
+  startPeriodicHoldingCheck();
 });
 
 // Setup verification channels with pinned embeds and buttons
@@ -69,16 +74,22 @@ async function setupVerificationChannel() {
           'Click the button below to verify your NFT ownership. You will:\n' +
           '1. Provide your wallet address\n' +
           '2. Add a unique token to your OpenSea bio\n' +
-          '3. Receive a role based on your NFT holdings\n\n'
+          '3. Receive a role based on your NFT holdings\n\n' +
+          '**Manage your wallets:** Use the "Manage Wallets" button to check, add, or remove verified wallets.\n'
         )
         .setFooter({ text: 'This is a secure verification process' });
 
-      const button = new ButtonBuilder()
+      const verifyButton = new ButtonBuilder()
         .setCustomId(`start_verification_${collection.id}`)
         .setStyle(ButtonStyle.Primary)
         .setLabel('Start Verification');
 
-      const row = new ActionRowBuilder().addComponents(button);
+      const manageButton = new ButtonBuilder()
+        .setCustomId(`manage_wallets_${collection.id}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Manage Wallets');
+
+      const row = new ActionRowBuilder().addComponents(verifyButton, manageButton);
 
       // Check if message already exists (fetch last 100 messages)
       const messages = await channel.messages.fetch({ limit: 100 });
@@ -115,6 +126,38 @@ client.on(Events.InteractionCreate, async interaction => {
       if (customId.startsWith('start_verification_')) {
         const collectionId = customId.replace('start_verification_', '');
         await showWalletModal(interaction, collectionId);
+      } else if (customId.startsWith('manage_wallets_')) {
+        const collectionId = customId.replace('manage_wallets_', '');
+        await showWalletManagementMenu(interaction, collectionId);
+      } else if (customId.startsWith('delete_wallet_')) {
+        const [, collectionId, walletAddress] = customId.match(/delete_wallet_(.+)_(.+)/) || [];
+        if (collectionId && walletAddress) {
+          await handleWalletDeletion(interaction, collectionId, walletAddress);
+        }
+      } else if (customId.startsWith('confirm_delete_')) {
+        const [, collectionId, walletAddress] = customId.match(/confirm_delete_(.+)_(.+)/) || [];
+        if (collectionId && walletAddress) {
+          await confirmWalletDeletion(interaction, collectionId, walletAddress);
+        }
+      } else if (customId === 'add_another_wallet') {
+        const collectionId = interaction.message.embeds[0]?.footer?.text?.match(/col:(\S+)/)?.[1];
+        if (collectionId) {
+          await showWalletModal(interaction, collectionId);
+        }
+      }
+    } else if (interaction.isStringSelectMenu()) {
+      if (interaction.customId.startsWith('wallet_action_')) {
+        const collectionId = interaction.customId.replace('wallet_action_', '');
+        const action = interaction.values[0];
+        
+        if (action === 'add_wallet') {
+          await showWalletModal(interaction, collectionId);
+        } else if (action.startsWith('delete_')) {
+          const walletAddress = action.replace('delete_', '');
+          await showDeleteConfirmation(interaction, collectionId, walletAddress);
+        } else if (action === 'back') {
+          await showWalletManagementMenu(interaction, collectionId);
+        }
       }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId.startsWith('wallet_input_modal_')) {
@@ -133,6 +176,142 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 });
+
+// Show wallet management menu
+async function showWalletManagementMenu(interaction, collectionId) {
+  await interaction.deferReply({ flags: 64 });
+
+  try {
+    const userId = interaction.user.id;
+    const wallets = database.getUserVerifiedWalletsForCollection(userId, collectionId);
+    const collection = collectionMap[collectionId];
+
+    if (!collection) {
+      return await interaction.editReply('Invalid collection configuration.');
+    }
+
+    if (wallets.length === 0) {
+      const msg = await interaction.editReply(
+        `**${collection.name}**\n\n` +
+        `You haven't verified any wallets for this collection yet. Click "Start Verification" to add one.`
+      );
+      return;
+    }
+
+    const walletList = wallets
+      .map((w, i) => `${i + 1}. \`${w.wallet_address}\`\n   Holdings: ${w.current_holding_count} NFT(s)`)
+      .join('\n');
+
+    const options = [
+      new StringSelectMenuOptionBuilder()
+        .setLabel('➕ Add Another Wallet')
+        .setValue('add_wallet')
+        .setDescription('Verify a new wallet for this collection'),
+      ...wallets.map(w => 
+        new StringSelectMenuOptionBuilder()
+          .setLabel(`🗑️ Delete ${w.wallet_address.slice(0, 6)}...${w.wallet_address.slice(-4)}`)
+          .setValue(`delete_${w.wallet_address}`)
+          .setDescription(`Remove wallet from verification`)
+      )
+    ];
+
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(`wallet_action_${collectionId}`)
+      .setPlaceholder('Choose an action...')
+      .addOptions(options);
+
+    const row = new ActionRowBuilder().addComponents(select);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(`💼 Wallet Management - ${collection.name}`)
+      .setDescription(`**Your Verified Wallets:**\n${walletList}\n\n**Actions:**`)
+      .setFooter({ text: `col:${collectionId}` });
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+
+  } catch (error) {
+    console.error('Error showing wallet management menu:', error);
+    await interaction.editReply('An error occurred while loading your wallets.');
+  }
+}
+
+// Show delete confirmation
+async function showDeleteConfirmation(interaction, collectionId, walletAddress) {
+  await interaction.deferReply({ flags: 64 });
+
+  try {
+    const collection = collectionMap[collectionId];
+    
+    const confirmButton = new ButtonBuilder()
+      .setCustomId(`confirm_delete_${collectionId}_${walletAddress}`)
+      .setStyle(ButtonStyle.Danger)
+      .setLabel('Yes, Delete');
+
+    const cancelButton = new ButtonBuilder()
+      .setCustomId(`manage_wallets_${collectionId}`)
+      .setStyle(ButtonStyle.Secondary)
+      .setLabel('Cancel');
+
+    const row = new ActionRowBuilder().addComponents(confirmButton, cancelButton);
+
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle('⚠️ Confirm Deletion')
+      .setDescription(
+        `Are you sure you want to delete wallet \`${walletAddress}\` from **${collection.name}**?\n\n` +
+        `If you no longer hold NFTs from this collection in any verified wallet, the role will be removed.`
+      );
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+
+  } catch (error) {
+    console.error('Error showing delete confirmation:', error);
+    await interaction.editReply('An error occurred.');
+  }
+}
+
+// Confirm wallet deletion
+async function confirmWalletDeletion(interaction, collectionId, walletAddress) {
+  await interaction.deferReply({ flags: 64 });
+
+  try {
+    const userId = interaction.user.id;
+    const collection = collectionMap[collectionId];
+    const guild = interaction.guild;
+    const member = await guild.members.fetch(userId);
+
+    const deleted = database.deleteVerifiedWallet(userId, walletAddress, collectionId);
+
+    if (!deleted) {
+      return await interaction.editReply('Wallet not found or already deleted.');
+    }
+
+    // Check if user has any other wallets with NFTs for this collection
+    const remainingWallets = database.getUserVerifiedWalletsForCollection(userId, collectionId);
+    const hasAnyNFTs = remainingWallets.some(w => w.current_holding_count > 0);
+
+    // If no remaining wallets with NFTs, remove the role
+    if (!hasAnyNFTs && collection.roleId) {
+      const role = guild.roles.cache.get(collection.roleId);
+      if (role && member.roles.cache.has(collection.roleId)) {
+        await member.roles.remove(role);
+        database.removeUserRole(userId, guild.id, collection.roleId, collectionId);
+        console.log(`✅ Role removed from user ${userId} (wallet deletion)`);
+      }
+    }
+
+    const msg = await interaction.editReply(
+      `✅ Wallet \`${walletAddress}\` has been deleted from **${collection.name}**.\n` +
+      (hasAnyNFTs ? '✅ You still have NFTs from other wallets, so your role remains.' : '⚠️ Role has been removed as you no longer hold any NFTs from this collection.')
+    );
+    scheduleMessageDeletion(interaction, msg);
+
+  } catch (error) {
+    console.error('Error confirming wallet deletion:', error);
+    await interaction.editReply('An error occurred while deleting the wallet.');
+  }
+}
 
 // Show wallet address input modal
 async function showWalletModal(interaction, collectionId) {
@@ -175,8 +354,8 @@ async function handleWalletSubmission(interaction, collectionId) {
       return;
     }
 
-    // Check if wallet was previously verified
-    const isPreviouslyVerified = database.isWalletPreviouslyVerified(userId, walletAddress);
+    // Check if wallet was previously verified for this collection
+    const isPreviouslyVerified = database.isWalletPreviouslyVerified(userId, walletAddress, collectionId);
 
     if (isPreviouslyVerified) {
       // Re-verify: check current NFT holdings and update role
@@ -237,7 +416,7 @@ async function pollOpenSeaBio(interaction, walletAddress, token, attemptId, user
       if (bio.includes(token)) {
         verified = true;
         database.completeVerificationAttempt(attemptId);
-        database.addVerifiedWallet(userId, walletAddress);
+        database.addVerifiedWallet(userId, walletAddress, collectionId);
 
         const msg = await interaction.followUp({
           content: '✅ **Ownership Verified!** Checking your NFT holdings...',
@@ -305,6 +484,9 @@ async function checkAndAssignRole(interaction, walletAddress, userId, collection
 
     const nfts = await fetchNFTsFromCollection(walletAddress, collectionId);
 
+    // Update holding count in database
+    database.updateHoldingCount(userId, walletAddress, collectionId, nfts.length);
+
     if (nfts.length === 0) {
       const msg = await interaction.followUp({
         content: `❌ You don't currently own any NFTs from this collection.`,
@@ -335,21 +517,23 @@ async function checkAndAssignRole(interaction, walletAddress, userId, collection
     if (member.roles.cache.has(collection.roleId)) {
       const nftList = nfts.map(nft => `• ${nft}`).join('\n');
       const msg = await interaction.followUp({
-        content: `✅ You already have the role! **Your NFTs:**\n${nftList}`,
+        content: `✅ You already have the role! **Your NFTs from this wallet:**\n${nftList}`,
         flags: 64
       });
       scheduleMessageDeletion(interaction, msg);
       console.log(`ℹ️ User ${userId} already has role for wallet ${walletAddress}`);
+      database.addUserRole(userId, guild.id, collection.roleId, collectionId);
       return;
     }
 
     // Assign the role
     await member.roles.add(role);
+    database.addUserRole(userId, guild.id, collection.roleId, collectionId);
 
     const nftList = nfts.map(nft => `• ${nft}`).join('\n');
 
     const msg = await interaction.followUp({
-      content: `🎉 **Success!** Role assigned!\n\n**Your NFTs:**\n${nftList}`,
+      content: `🎉 **Success!** Role assigned!\n\n**Your NFTs from this wallet:**\n${nftList}`,
       flags: 64
     });
     scheduleMessageDeletion(interaction, msg);
@@ -370,11 +554,13 @@ async function checkAndAssignRole(interaction, walletAddress, userId, collection
 async function fetchNFTsFromCollection(walletAddress, collectionId) {
   try {
     const collection = collectionMap[collectionId];
-    console.log(`🔍 Querying OpenSea for NFTs: wallet=${walletAddress}, chain=megaeth, collection=${collection.id}`);
+    const chain = collection.chain || 'ethereum';
     
-    // Query user's NFTs on megaeth chain
+    console.log(`🔍 Querying OpenSea for NFTs: wallet=${walletAddress}, chain=${chain}, collection=${collection.id}`);
+    
+    // Query user's NFTs on the specified chain
     const response = await axios.get(
-      `https://api.opensea.io/api/v2/chain/megaeth/account/${walletAddress}/nfts`,
+      `https://api.opensea.io/api/v2/chain/${chain}/account/${walletAddress}/nfts`,
       {
         headers: {
           'X-API-KEY': CONFIG.OPENSEA_API_KEY,
@@ -388,7 +574,7 @@ async function fetchNFTsFromCollection(walletAddress, collectionId) {
     // Filter to only include NFTs from our collection
     nfts = nfts.filter(nft => nft.collection === collection.id);
     
-    console.log(`✅ Found ${nfts.length} NFTs from ${collection.id} collection for wallet`);
+    console.log(`✅ Found ${nfts.length} NFTs from ${collection.id} collection for wallet on ${chain}`);
     
     return nfts.map(nft => {
       if (nft.name) {
@@ -399,7 +585,8 @@ async function fetchNFTsFromCollection(walletAddress, collectionId) {
 
   } catch (error) {
     console.error('❌ Error fetching NFTs:', error.response?.status, error.message);
-    console.error('   Chain: megaeth');
+    const collection = collectionMap[collectionId];
+    console.error('   Chain:', collection.chain || 'ethereum');
     console.error('   Collection ID:', collectionId);
     console.error('   Wallet Address:', walletAddress);
     if (error.response?.data) {
@@ -407,6 +594,121 @@ async function fetchNFTsFromCollection(walletAddress, collectionId) {
     }
     throw error;
   }
+}
+
+// Periodic holding check function
+async function performPeriodicHoldingCheck() {
+  console.log('🔄 Starting periodic NFT holding check...');
+  
+  try {
+    // Get all guilds the bot is in
+    const guilds = client.guilds.cache;
+
+    for (const [guildId, guild] of guilds) {
+      try {
+        // Get all users who have verified wallets
+        const usersWithRoles = database.getAllUsersWithRoles(guildId);
+
+        for (const { user_id: userId } of usersWithRoles) {
+          try {
+            const member = await guild.members.fetch(userId).catch(() => null);
+            if (!member) continue; // User left the guild
+
+            // Get all verified wallets for this user
+            const wallets = database.getAllVerifiedWalletsByUser(userId);
+            
+            // Group by collection and check holdings
+            const collectionMap2 = {};
+            for (const wallet of wallets) {
+              if (!collectionMap2[wallet.collection_id]) {
+                collectionMap2[wallet.collection_id] = [];
+              }
+              collectionMap2[wallet.collection_id].push(wallet);
+            }
+
+            // Check each collection
+            for (const [collectionId, collectionWallets] of Object.entries(collectionMap2)) {
+              const collection = collectionMap[collectionId];
+              if (!collection) continue;
+
+              // Count total NFTs across all wallets for this collection
+              let totalHoldings = 0;
+              
+              for (const wallet of collectionWallets) {
+                try {
+                  const nftCount = await fetchNFTCountFromCollection(wallet.wallet_address, collectionId);
+                  database.updateHoldingCount(userId, wallet.wallet_address, collectionId, nftCount);
+                  totalHoldings += nftCount;
+                } catch (error) {
+                  console.warn(`Failed to check holdings for ${wallet.wallet_address}:`, error.message);
+                  // Keep previous count on error to avoid removing roles due to API failures
+                }
+              }
+
+              // If total holdings is 0, remove the role
+              if (totalHoldings === 0 && collection.roleId) {
+                const role = guild.roles.cache.get(collection.roleId);
+                if (role && member.roles.cache.has(collection.roleId)) {
+                  await member.roles.remove(role).catch(err => {
+                    console.error(`Failed to remove role from user ${userId}:`, err.message);
+                  });
+                  database.removeUserRole(userId, guildId, collection.roleId, collectionId);
+                  console.log(`🔄 Role removed from user ${userId} (no NFT holdings for ${collectionId})`);
+                }
+              }
+            }
+          } catch (error) {
+            console.error(`Error processing user ${userId}:`, error.message);
+          }
+        }
+      } catch (error) {
+        console.error(`Error in guild ${guildId}:`, error.message);
+      }
+    }
+
+    console.log('✅ Periodic holding check completed');
+  } catch (error) {
+    console.error('❌ Error in periodic holding check:', error.message);
+  }
+}
+
+// Fetch NFT count from collection (without returning full details)
+async function fetchNFTCountFromCollection(walletAddress, collectionId) {
+  try {
+    const collection = collectionMap[collectionId];
+    const chain = collection.chain || 'ethereum';
+    
+    const response = await axios.get(
+      `https://api.opensea.io/api/v2/chain/${chain}/account/${walletAddress}/nfts`,
+      {
+        headers: {
+          'X-API-KEY': CONFIG.OPENSEA_API_KEY,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    let nfts = response.data.nfts || [];
+    nfts = nfts.filter(nft => nft.collection === collection.id);
+    
+    return nfts.length;
+  } catch (error) {
+    if (error.response?.status === 404) {
+      return 0; // Wallet not found, assume no holdings
+    }
+    throw error;
+  }
+}
+
+// Start periodic holding check
+function startPeriodicHoldingCheck() {
+  console.log(`⏱️ Periodic holding check will run every ${CONFIG.HOLDING_CHECK_INTERVAL / 1000 / 60} minutes`);
+  
+  // Run immediately
+  performPeriodicHoldingCheck();
+  
+  // Then run periodically
+  setInterval(performPeriodicHoldingCheck, CONFIG.HOLDING_CHECK_INTERVAL);
 }
 
 // Schedule message deletion after a delay
