@@ -43,11 +43,12 @@ client.on(Events.InteractionCreate, async interaction => {
     } else if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'wallet_action') {
         const action = interaction.values[0];
-        await interaction.deferReply({ flags: 64 });
 
         if (action === 'add_wallet') {
+          // Must not defer first — showModal must be the initial response to this interaction.
           await showWalletModal(interaction);
         } else if (action.startsWith('delete_')) {
+          await interaction.deferReply({ flags: 64 });
           const walletAddress = action.replace('delete_', '');
           await WalletManager.handleWalletDeletion(interaction, walletAddress);
         }
