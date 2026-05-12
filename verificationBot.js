@@ -7,6 +7,7 @@ const UIManager = require('./UIManager');
 const VerificationFlow = require('./VerificationFlow');
 const WalletManager = require('./WalletManager');
 const PeriodicChecker = require('./PeriodicChecker');
+const RoleManager = require('./RoleManager');
 
 // Initialize
 database.initializeDatabase();
@@ -123,6 +124,66 @@ async function handleWalletSubmission(interaction) {
 
     if (!/^0x[a-f0-9]{40}$/.test(walletAddress)) {
       const msg = await interaction.editReply('Invalid wallet address format. Must be 0x followed by 40 hex characters.');
+      verificationFlow.scheduleMessageDeletion(msg);
+      return;
+    }
+
+    const existingWallets = database.getUserVerifiedWallets(userId);
+    const dbAddresses = existingWallets.map(w => w.wallet_address.toLowerCase());
+    const alreadyVerified = dbAddresses.includes(walletAddress);
+
+    if (alreadyVerified) {
+      if (!interaction.guild) {
+        const msg = await interaction.editReply(
+          '❌ Refresh holdings from the verification channel inside the server.'
+        );
+        verificationFlow.scheduleMessageDeletion(msg);
+        return;
+      }
+
+      const canonicalWallet = existingWallets.find(
+        w => w.wallet_address.toLowerCase() === walletAddress
+      ).wallet_address;
+      const collectionsPreviouslyVerified = new Set(
+        existingWallets
+          .filter(w => w.wallet_address.toLowerCase() === walletAddress)
+          .map(w => w.collection_id)
+      );
+
+      await interaction.editReply('✅ Wallet already verified — **refreshing holdings**…');
+
+      let nftResults;
+      try {
+        nftResults = await verificationFlow.nftChecker.checkWalletForAllCollections(walletAddress);
+      } catch (err) {
+        console.error('OpenSea holdings refresh failed:', err);
+        const msg = await interaction.editReply(
+          '✅ Wallet already verified, but holdings could not be refreshed. Try again later.'
+        );
+        verificationFlow.scheduleMessageDeletion(msg);
+        return;
+      }
+
+      for (const [collectionId, nfts] of Object.entries(nftResults)) {
+        const count = (nfts || []).length;
+        const hadRow = collectionsPreviouslyVerified.has(collectionId);
+        if (count > 0) {
+          database.addVerifiedWallet(userId, canonicalWallet, collectionId);
+          database.updateHoldingCount(userId, canonicalWallet, collectionId, count);
+        } else if (hadRow) {
+          database.updateHoldingCount(userId, canonicalWallet, collectionId, 0);
+        }
+      }
+
+      const member = await interaction.guild.members.fetch(userId);
+      await RoleManager.assignRoleIfEligible(member, userId, interaction.guild, interaction.guild.id, nftResults);
+      await RoleManager.removeRoleIfNoHoldings(member, userId, interaction.guild, interaction.guild.id);
+
+      const resultsText = UIManager.formatVerificationResults(nftResults);
+
+      const msg = await interaction.editReply(
+        `✅ **Wallet already verified** — holdings refreshed.\n\n**Your NFTs:**\n${resultsText}`
+      );
       verificationFlow.scheduleMessageDeletion(msg);
       return;
     }

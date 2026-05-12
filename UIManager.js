@@ -68,17 +68,29 @@ class UIManager {
   }
 
   createWalletManagementSelect(allWallets) {
+    const collectionsByAddress = new Map();
+    for (const w of allWallets) {
+      if (!collectionsByAddress.has(w.wallet_address)) {
+        collectionsByAddress.set(w.wallet_address, []);
+      }
+      collectionsByAddress.get(w.wallet_address).push(w.collection_id);
+    }
+
+    const deleteOptions = [...collectionsByAddress.entries()].map(([wallet_address, collectionIds]) => {
+      const colsDesc = `Collections: ${collectionIds.join(', ')}`;
+      const desc = colsDesc.length > 100 ? `${colsDesc.slice(0, 97)}...` : colsDesc;
+      return new StringSelectMenuOptionBuilder()
+        .setLabel(`🗑️ Delete ${wallet_address.slice(0, 6)}...${wallet_address.slice(-4)}`)
+        .setValue(`delete_${wallet_address}`)
+        .setDescription(desc);
+    });
+
     const options = [
       new StringSelectMenuOptionBuilder()
         .setLabel('➕ Add Another Wallet')
         .setValue('add_wallet')
         .setDescription('Verify a new wallet'),
-      ...allWallets.map(w => 
-        new StringSelectMenuOptionBuilder()
-          .setLabel(`🗑️ Delete ${w.wallet_address.slice(0, 6)}...${w.wallet_address.slice(-4)}`)
-          .setValue(`delete_${w.wallet_address}`)
-          .setDescription(`Collections: ${w.collection_id}`)
-      )
+      ...deleteOptions
     ];
 
     return new StringSelectMenuBuilder()
