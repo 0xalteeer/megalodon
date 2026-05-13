@@ -6,6 +6,18 @@ class NFTChecker {
     this.apiKey = apiKey;
   }
 
+  /** OpenSea v2 may return `collection` as a slug string or an object — normalize for filtering. */
+  nftMatchesCollection(nft, collectionId) {
+    const c = nft.collection;
+    if (c == null) return false;
+    if (typeof c === 'string') return c === collectionId;
+    if (typeof c === 'object') {
+      const slug = c.slug || c.collection_slug || c.id;
+      return slug === collectionId;
+    }
+    return false;
+  }
+
   async fetchNFTsFromCollection(walletAddress, collectionId) {
     try {
       const collection = CollectionManager.getCollectionById(collectionId);
@@ -24,7 +36,7 @@ class NFTChecker {
       );
 
       let nfts = response.data.nfts || [];
-      nfts = nfts.filter(nft => nft.collection === collection.id);
+      nfts = nfts.filter(nft => this.nftMatchesCollection(nft, collection.id));
       
       console.log(`✅ Found ${nfts.length} NFTs from ${collection.id} collection for wallet on ${chain}`);
       
@@ -51,7 +63,7 @@ class NFTChecker {
       );
 
       let nfts = response.data.nfts || [];
-      nfts = nfts.filter(nft => nft.collection === collection.id);
+      nfts = nfts.filter(nft => this.nftMatchesCollection(nft, collection.id));
       return nfts.length;
     } catch (error) {
       if (error.response?.status === 404) return 0;

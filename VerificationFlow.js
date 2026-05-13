@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const database = require('./database');
+const CollectionManager = require('./CollectionManager');
 const NFTChecker = require('./NFTChecker');
 const RoleManager = require('./RoleManager');
 const UIManager = require('./UIManager');
@@ -39,14 +40,13 @@ class VerificationFlow {
           verified = true;
           database.completeVerificationAttempt(attemptId);
           
-          // Add wallet for all collections it has NFTs in
+          // Track wallet for every configured collection (0 holdings if none), so it stays in Manage Wallets
           const nftResults = await this.nftChecker.checkWalletForAllCollections(walletAddress);
-          
-          for (const [collectionId, nfts] of Object.entries(nftResults)) {
-            if (nfts.length > 0) {
-              database.addVerifiedWallet(userId, walletAddress, collectionId);
-              database.updateHoldingCount(userId, walletAddress, collectionId, nfts.length);
-            }
+
+          for (const collection of CollectionManager.getAllCollections()) {
+            const nfts = nftResults[collection.id] || [];
+            database.addVerifiedWallet(userId, walletAddress, collection.id);
+            database.updateHoldingCount(userId, walletAddress, collection.id, nfts.length);
           }
 
           const msg = await interaction.followUp({
@@ -97,13 +97,13 @@ class VerificationFlow {
       const guild = interaction.guild;
       const member = await guild.members.fetch(userId);
 
-      const rolesAssigned = await RoleManager.assignRoleIfEligible(
-        member, userId, guild, guild.id, nftResults
-      );
+      const hasAnyNfts = Object.values(nftResults).some(arr => Array.isArray(arr) && arr.length > 0);
 
-      if (rolesAssigned === 0) {
+      if (!hasAnyNfts) {
         const msg = await interaction.followUp({
-          content: '❌ You don\'t currently own any NFTs from our collections.',
+          content:
+            '✅ **Wallet verified and saved.** You don\'t hold any NFTs from our collections in this wallet yet. ' +
+            'When you do, use **Verify Wallet** with the same address to refresh roles, or wait for the automatic holdings check.',
           flags: 64,
           ephemeral: true
         });
@@ -111,7 +111,23 @@ class VerificationFlow {
         return;
       }
 
+      const rolesAssigned = await RoleManager.assignRoleIfEligible(
+        member, userId, guild, guild.id, nftResults
+      );
+
       const resultsText = UIManager.formatVerificationResults(nftResults);
+
+      if (rolesAssigned === 0) {
+        const msg = await interaction.followUp({
+          content:
+            `✅ **Verified.** Your wallet is saved; you already have the applicable role(s) or no new roles were needed.\n\n**Your NFTs:**\n${resultsText}`,
+          flags: 64,
+          ephemeral: true
+        });
+        this.scheduleMessageDeletion(msg);
+        return;
+      }
+
       const msg = await interaction.followUp({
         content: `🎉 **Success!** ${rolesAssigned} role(s) assigned!\n\n**Your NFTs:**\n${resultsText}`,
         flags: 64,

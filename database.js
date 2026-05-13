@@ -186,6 +186,14 @@ function getAllVerifiedWalletsByUser(userId) {
   return stmt.all(userId);
 }
 
+// Distinct users who have at least one verified wallet row (for periodic checks / role sync)
+function getDistinctVerifiedUserIds() {
+  const stmt = db.prepare(`
+    SELECT DISTINCT user_id FROM verified_wallets
+  `);
+  return stmt.all().map(r => r.user_id);
+}
+
 // Close database connection
 function closeDatabase() {
   db.close();
@@ -206,6 +214,7 @@ module.exports = {
   addUserRole,
   removeUserRole,
   getAllUsersWithRoles,
+  getDistinctVerifiedUserIds,
   getUserRolesForCollection,
   getUserCollections,
   getAllVerifiedWalletsByUser,

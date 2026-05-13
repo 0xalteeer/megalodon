@@ -8,23 +8,39 @@ class WalletManager {
       return 'No verified wallets yet.';
     }
 
-    return wallets
-      .map((w, i) => {
-        const collections = CollectionManager.getAllCollections()
-          .filter(c => c.id === w.collection_id)
-          .map(c => c.name)
-          .join(', ');
-        return `${i + 1}. \`${w.wallet_address}\`\n   Collections: ${collections}\n   Holdings: ${w.current_holding_count} NFT(s)`;
-      })
-      .join('\n');
+    const allCollections = CollectionManager.getAllCollections();
+    const roleCollections = allCollections.filter(c => c.roleId);
+
+    const byAddress = new Map();
+    for (const w of wallets) {
+      const key = w.wallet_address.toLowerCase();
+      if (!byAddress.has(key)) {
+        byAddress.set(key, { displayAddress: w.wallet_address, counts: new Map() });
+      }
+      const entry = byAddress.get(key);
+      entry.counts.set(w.collection_id, w.current_holding_count);
+    }
+
+    const collectionsToShow =
+      roleCollections.length > 0 ? roleCollections : allCollections;
+
+    let index = 0;
+    const blocks = [];
+    for (const { displayAddress, counts } of byAddress.values()) {
+      index += 1;
+      const lines = collectionsToShow.map(c => {
+        const n = counts.has(c.id) ? counts.get(c.id) : 0;
+        return `   • **${c.name}:** ${n} NFT(s)`;
+      });
+      blocks.push(`${index}. \`${displayAddress}\`\n${lines.join('\n')}`);
+    }
+
+    return blocks.join('\n\n');
   }
 
   async handleWalletDeletion(interaction, walletAddress) {
     const userId = interaction.user.id;
-    const allWallets = database.getUserVerifiedWallets(userId);
-    
-    const walletsForAddress = allWallets.filter(w => w.wallet_address === walletAddress);
-    
+
     const embed = UIManager.createDeleteConfirmEmbed(walletAddress);
     const row = UIManager.createDeleteConfirmButtons(walletAddress);
 
@@ -37,7 +53,9 @@ class WalletManager {
 
     try {
       const allWallets = database.getUserVerifiedWallets(userId);
-      const walletsToDelete = allWallets.filter(w => w.wallet_address === walletAddress);
+      const walletsToDelete = allWallets.filter(
+        w => w.wallet_address.toLowerCase() === walletAddress.toLowerCase()
+      );
 
       for (const wallet of walletsToDelete) {
         database.deleteVerifiedWallet(userId, wallet.wallet_address, wallet.collection_id);

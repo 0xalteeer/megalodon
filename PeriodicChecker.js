@@ -1,7 +1,6 @@
 const database = require('./database');
 const CollectionManager = require('./CollectionManager');
 const NFTChecker = require('./NFTChecker');
-const RoleManager = require('./RoleManager');
 
 class PeriodicChecker {
   constructor(apiKey, interval = 15 * 60 * 1000) {
@@ -17,50 +16,75 @@ class PeriodicChecker {
 
       for (const [guildId, guild] of guilds) {
         try {
-          const usersWithRoles = database.getAllUsersWithRoles(guildId);
+          await guild.roles.fetch().catch(() => {});
 
-          for (const { user_id: userId } of usersWithRoles) {
+          const userIds = database.getDistinctVerifiedUserIds();
+
+          for (const userId of userIds) {
             try {
-              const member = await guild.members.fetch(userId).catch(() => null);
+              const member = await guild.members.fetch({ user: userId, force: true }).catch(() => null);
               if (!member) continue;
 
               const wallets = database.getAllVerifiedWalletsByUser(userId);
-              const collectionMap = {};
+              if (wallets.length === 0) continue;
 
-              for (const wallet of wallets) {
-                if (!collectionMap[wallet.collection_id]) {
-                  collectionMap[wallet.collection_id] = [];
+              const canonicalByLower = new Map();
+              for (const w of wallets) {
+                const key = w.wallet_address.toLowerCase();
+                if (!canonicalByLower.has(key)) {
+                  canonicalByLower.set(key, w.wallet_address);
                 }
-                collectionMap[wallet.collection_id].push(wallet);
               }
 
-              for (const [collectionId, collectionWallets] of Object.entries(collectionMap)) {
-                const collection = CollectionManager.getCollectionById(collectionId);
-                if (!collection) continue;
-
+              for (const collection of CollectionManager.getAllCollections()) {
                 let totalHoldings = 0;
-                
-                for (const wallet of collectionWallets) {
+
+                for (const walletAddress of canonicalByLower.values()) {
                   try {
                     const nftCount = await this.nftChecker.fetchNFTCountFromCollection(
-                      wallet.wallet_address, 
-                      collectionId
+                      walletAddress,
+                      collection.id
                     );
-                    database.updateHoldingCount(userId, wallet.wallet_address, collectionId, nftCount);
+                    database.addVerifiedWallet(userId, walletAddress, collection.id);
+                    database.updateHoldingCount(userId, walletAddress, collection.id, nftCount);
                     totalHoldings += nftCount;
                   } catch (error) {
-                    console.warn(`Failed to check holdings for ${wallet.wallet_address}:`, error.message);
+                    console.warn(
+                      `Failed to check holdings for ${walletAddress} / ${collection.id}:`,
+                      error.message
+                    );
                   }
                 }
 
-                if (totalHoldings === 0 && collection.roleId) {
-                  const role = guild.roles.cache.get(collection.roleId);
-                  if (role && member.roles.cache.has(collection.roleId)) {
+                if (!collection.roleId) continue;
+
+                const role = guild.roles.cache.get(collection.roleId);
+                if (!role) {
+                  console.warn(
+                    `⚠️ Role ${collection.roleId} not found in guild ${guildId} (collection ${collection.id})`
+                  );
+                  continue;
+                }
+
+                if (totalHoldings === 0) {
+                  if (member.roles.cache.has(collection.roleId)) {
                     await member.roles.remove(role).catch(err => {
                       console.error(`Failed to remove role:`, err.message);
                     });
-                    database.removeUserRole(userId, guildId, collection.roleId, collectionId);
-                    console.log(`🔄 Role removed from user ${userId} for ${collectionId}`);
+                    database.removeUserRole(userId, guildId, collection.roleId, collection.id);
+                    console.log(`🔄 Role removed from user ${userId} for ${collection.id}`);
+                  }
+                } else {
+                  if (!member.roles.cache.has(collection.roleId)) {
+                    try {
+                      await member.roles.add(role);
+                      console.log(`🔄 Role assigned to user ${userId} for ${collection.id}`);
+                    } catch (err) {
+                      console.error(`Failed to assign role for ${collection.id}:`, err.message);
+                    }
+                  }
+                  if (member.roles.cache.has(collection.roleId)) {
+                    database.addUserRole(userId, guildId, collection.roleId, collection.id);
                   }
                 }
               }
