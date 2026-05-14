@@ -1,0 +1,11 @@
+{
+  "collections": [
+    {
+      "id": "world-computer-netizens-megaeth",
+      "name": "World Computer Netizens",
+      "roleId": "YOUR_DISCORD_ROLE_ID",
+      "channelId": "YOUR_VERIFICATION_CHANNEL_ID",
+      "chain": "megaeth"
+    }
+  ]
+}
