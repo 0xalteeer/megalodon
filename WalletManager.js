@@ -28,11 +28,29 @@ class WalletManager {
     const blocks = [];
     for (const { displayAddress, counts } of byAddress.values()) {
       index += 1;
-      const lines = collectionsToShow.map(c => {
-        const n = counts.has(c.id) ? counts.get(c.id) : 0;
-        return `   • **${c.name}:** ${n} NFT(s)`;
-      });
-      blocks.push(`${index}. \`${displayAddress}\`\n${lines.join('\n')}`);
+
+      const entries = collectionsToShow.map(c => ({
+        collection: c,
+        n: counts.has(c.id) ? counts.get(c.id) : 0
+      }));
+      const positive = entries.filter(e => e.n > 0);
+
+      let detail;
+      if (positive.length > 0) {
+        detail = positive
+          .map(
+            ({ collection, n }) =>
+              `   • **${collection.name}:** ${n} NFT(s)`
+          )
+          .join('\n');
+      } else if (roleCollections.length > 0) {
+        detail =
+          "   You don't currently own any NFTs that grant roles.";
+      } else {
+        detail = '   No NFTs in configured collections.';
+      }
+
+      blocks.push(`${index}. \`${displayAddress}\`\n${detail}`);
     }
 
     return blocks.join('\n\n');

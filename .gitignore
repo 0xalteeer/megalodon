@@ -147,3 +147,4 @@ vite.config.ts.timestamp-*
 
 # SQLite database
 verification.db
+verification.db.backup
