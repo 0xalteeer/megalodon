@@ -18,25 +18,77 @@ class VerificationFlow {
     return `MEGALODON-${randomHex}`;
   }
 
+  openSeaHeaders() {
+    return {
+      'X-API-KEY': process.env.opensea_api_key,
+      Accept: 'application/json'
+    };
+  }
+
+  /** Collect any bio strings OpenSea returns on the account object (current + plausible alternate field names). */
+  extractBiosFromAccountPayload(data) {
+    if (!data || typeof data !== 'object') return [];
+    const texts = [];
+    if (typeof data.bio === 'string' && data.bio.length) texts.push(data.bio);
+    for (const key of ['wallet_bio', 'profile_bio', 'account_bio']) {
+      if (typeof data[key] === 'string' && data[key].length) texts.push(data[key]);
+    }
+    return texts;
+  }
+
+  /**
+   * OpenSea can surface different bios for the same person (e.g. main profile vs connected wallet profile).
+   * We merge bios from GET /accounts/{wallet}, then resolve linked username/ENS and fetch those account pages too.
+   */
+  async fetchMergedOpenSeaBios(walletAddress) {
+    const base = 'https://api.opensea.io/api/v2';
+    const headers = this.openSeaHeaders();
+    const seen = new Set();
+    const parts = [];
+
+    const fetchOneAccount = async identifier => {
+      const key = String(identifier).toLowerCase();
+      if (seen.has(key)) return;
+      const { data } = await axios.get(
+        `${base}/accounts/${encodeURIComponent(identifier)}`,
+        { headers }
+      );
+      seen.add(key);
+      parts.push(...this.extractBiosFromAccountPayload(data));
+    };
+
+    await fetchOneAccount(walletAddress);
+
+    try {
+      const { data: resolved } = await axios.get(
+        `${base}/accounts/resolve/${encodeURIComponent(walletAddress)}`,
+        { headers }
+      );
+      const { username, ens_name: ensName, address } = resolved || {};
+      const linked = [username, ensName, address].filter(Boolean);
+      for (const id of linked) {
+        try {
+          await fetchOneAccount(id);
+        } catch (e) {
+          if (e.response?.status === 401) throw e;
+        }
+      }
+    } catch (e) {
+      if (e.response?.status === 401) throw e;
+    }
+
+    return parts.join('\n');
+  }
+
   async pollOpenSeaBio(interaction, walletAddress, token, attemptId, userId) {
     const startTime = Date.now();
     let verified = false;
 
     while (Date.now() - startTime < this.VERIFICATION_TIMEOUT) {
       try {
-        const response = await axios.get(
-          `https://api.opensea.io/api/v2/accounts/${walletAddress}`,
-          {
-            headers: {
-              'X-API-KEY': process.env.opensea_api_key,
-              'Accept': 'application/json'
-            }
-          }
-        );
+        const combinedBio = await this.fetchMergedOpenSeaBios(walletAddress);
 
-        const bio = response.data.bio || '';
-
-        if (bio.includes(token)) {
+        if (combinedBio.includes(token)) {
           verified = true;
           database.completeVerificationAttempt(attemptId);
           

@@ -19,7 +19,7 @@ class UIManager {
       .setDescription(
         'Click the buttons below to verify your NFT ownership or manage your wallets. You will:\n' +
         '1. Provide your wallet address\n' +
-        '2. Add a unique token to your OpenSea bio\n' +
+        '2. Add a unique token to your OpenSea bio (main profile **or** that wallet’s profile page)\n' +
         '3. Receive roles based on your NFT holdings\n\n' +
         '**Manage your wallets:** Use the "Manage Wallets" button to check, add, or remove verified wallets.\n'
       )
@@ -125,10 +125,13 @@ class UIManager {
 
   createVerificationTokenEmbed(token) {
     return `**Verification Token:** \`${token}\`\n\n` +
-      `Please add this token to your OpenSea bio within **5 minutes**:\n` +
+      `Please add this token to an OpenSea bio within **5 minutes** (either works):\n` +
+      `• **Main account:** Profile → Settings / Edit profile → bio\n` +
+      `• **Wallet profile:** Open your wallet’s OpenSea page (e.g. from Portfolio) and edit that profile’s bio\n` +
+      `Steps:\n` +
       `1. Go to [OpenSea.io](https://opensea.io)\n` +
-      `2. Click your profile\n` +
-      `3. Edit your profile bio\n` +
+      `2. Open **Profile** (or your wallet’s profile page)\n` +
+      `3. Edit the **bio** field\n` +
       `4. Paste: \`${token}\`\n` +
       `5. Save changes\n\n`;
   }
